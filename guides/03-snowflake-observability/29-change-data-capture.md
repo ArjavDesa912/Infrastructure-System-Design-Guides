@@ -251,7 +251,74 @@ Alternative: Transactional outbox in consumer
 
 ---
 
-## 9. Handling Interviewer Pushback
+## 9. Security Considerations
+
+```
+Data Privacy:
+  - PII filtering: mask or redact sensitive columns before publishing
+  - Field-level encryption: encrypt credit cards, SSNs at source
+  - GDPR compliance: right-to-be-forgotten via delete events
+
+Access Control:
+  - Source database: CDC connector uses least-privilege account (REPLICATION permission only)
+  - Kafka topics: ACLs restrict who can consume CDC events
+  - Destination systems: separate credentials per consumer
+
+Audit & Compliance:
+  - Immutable log: Kafka retain-all for change history
+  - Chain of custody: track every data change from source to destination
+  - Compliance reports: generate "what changed when" reports for auditors
+```
+
+---
+
+## 9. Testing Change Data Capture
+
+```python
+# Test: End-to-end CDC flow
+def test_cdc_pipeline():
+    # Insert row in source
+    source_db.execute("INSERT INTO orders (id, amount) VALUES (1, 100)")
+
+    # Wait for CDC event
+    event = consume_cdc_event(timeout=5)
+    assert event["op"] == "c"  # create
+    assert event["after"]["id"] == 1
+    assert event["after"]["amount"] == 100
+
+    # Verify in destination
+    result = dest_db.execute("SELECT * FROM orders WHERE id = 1")
+    assert result[0]["amount"] == 100
+
+# Test: Exactly-once semantics
+def test_exactly_once():
+    # Send CDC event
+    event = {"op": "u", "before": {"id": 1, "amount": 100}, "after": {"id": 1, "amount": 200}}
+
+    # Process twice (simulating retry)
+    process_event(event)
+    process_event(event)
+
+    # Verify result is same (idempotent)
+    result = dest_db.execute("SELECT amount FROM orders WHERE id = 1")
+    assert result[0]["amount"] == 200  # Not 300 or 400
+
+# Test: Schema evolution handling
+def test_schema_evolution():
+    # Add new column to source
+    source_db.execute("ALTER TABLE orders ADD COLUMN discount INT")
+
+    # Insert row with new column
+    source_db.execute("INSERT INTO orders (id, amount, discount) VALUES (2, 100, 10)")
+
+    # CDC should handle schema change
+    event = consume_cdc_event(timeout=5)
+    assert event["after"]["discount"] == 10
+```
+
+---
+
+## 10. Handling Interviewer Pushback
 
 | Interviewer Says | Your Response |
 |-----------------|---------------|

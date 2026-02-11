@@ -224,7 +224,86 @@ Kafka:
 
 ---
 
-## 7. Handling Interviewer Pushback
+## 7. Security Considerations
+
+```
+Access Control:
+  - RBAC: users can only view logs from their tenant/namespace
+  - Audit log search: track who searched what, when
+  - Query rate limiting per user (prevent expensive queries)
+
+Data Privacy:
+  - PII detection: automatically redact emails, SSNs, API keys
+  - Sensitive fields: hash or tokenize before indexing
+  - Encrypted transport: TLS for all log shipping
+  - Retention policies: auto-delete based on compliance requirements
+
+Log Integrity:
+  - Hash chaining: detect tampering with archived logs
+  - WORM storage: append-only for compliance (SEC, HIPAA)
+  - Signed logs: digital signatures for forensic evidence
+```
+
+---
+
+## 7. Testing Log Aggregation
+
+```python
+# Test: End-to-end log flow
+def test_log_flow():
+    # Send log from worker
+    send_log("worker-7", level="ERROR", message="Parse failed", file="test.sql")
+
+    # Verify in Kafka
+    kafka_msg = consume_kafka("logs-topic", timeout=1)
+    assert kafka_msg["worker"] == "worker-7"
+    assert kafka_msg["level"] == "ERROR"
+
+    # Wait for indexing
+    time.sleep(2)
+
+    # Verify searchable in Elasticsearch
+    results = query_elasticsearch({
+        "query": {"term": {"file": "test.sql"}},
+        "size": 1
+    })
+    assert len(results) == 1
+    assert results[0]["message"] == "Parse failed"
+
+# Test: Log sampling under load
+def test_log_sampling():
+    sampler = LogSampler(rate=0.1)  # 10% sampling
+
+    sampled_count = 0
+    for i in range(1000):
+        if sampler.should_log(level="INFO"):
+            sampled_count += 1
+
+    # Should be approximately 100 (±20% tolerance)
+    assert 80 < sampled_count < 120
+
+    # ERROR logs should never be sampled
+    error_count = 0
+    for i in range(100):
+        if sampler.should_log(level="ERROR"):
+            error_count += 1
+    assert error_count == 100  # 100% of errors sampled
+
+# Test: Alert triggering
+def test_alerting():
+    # Send 5 errors in 1 minute
+    for i in range(5):
+        send_log("worker-1", level="ERROR", message=f"Error {i}")
+        time.sleep(0.1)
+
+    # Check alert triggered
+    alerts = get_alerts(last_minutes=5)
+    assert any("High error rate" in alert["message"] for alert in alerts)
+```
+
+---
+
+## 8. Handling Interviewer Pushback
 
 | Interviewer Says | Your Response |
 |-----------------|---------------|

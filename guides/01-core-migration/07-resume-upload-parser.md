@@ -186,7 +186,73 @@ CREATE TABLE extracted_entities (
 
 ---
 
-## 6. Handling Interviewer Pushback
+## 6. Security Considerations
+
+```
+Data Protection:
+  - All documents encrypted at rest in S3 (SSE-KMS)
+  - TLS for data in transit
+  - PII detection and redaction during extraction
+  - Document access logged per-tenant (who accessed what, when)
+
+Input Validation:
+  - File type validation (magic bytes, not just extension)
+  - Size limits: reject files > 50MB
+  - Malware scanning before processing
+  - ZIP bomb detection (recursive extraction limits)
+
+Model Security:
+  - Prompt injection prevention for LLM calls
+  - Rate limiting per tenant to prevent abuse
+  - Sanitization of extracted entities (XSS prevention)
+  - Audit trail for all extractions (model version, confidence)
+```
+
+---
+
+## 6. Testing the Entity Extraction System
+
+```python
+# Test: Tiered extraction routing
+def test_tiered_extraction():
+    document = "Contact: john@example.com, Skills: Python, Kafka"
+
+    result = extract_entities(document)
+
+    # Email should use regex (fast path)
+    assert result['entities'][0]['value'] == 'john@example.com'
+    assert result['entities'][0]['source_method'] == 'REGEX'
+    assert result['entities'][0]['confidence'] > 0.99
+
+    # Skills should use NER
+    assert any(e['value'] == 'Python' and e['source_method'] == 'NER'
+               for e in result['entities'])
+
+# Test: Low confidence human review flagging
+def test_low_confidence_review():
+    document = "Complex ambiguous job description..."
+
+    result = extract_entities(document)
+
+    # Entities with confidence < 0.7 should be flagged
+    low_confidence = [e for e in result['entities'] if e['confidence'] < 0.7]
+    assert len(low_confidence) > 0
+    assert all(e['needs_review'] for e in low_confidence)
+
+# Test: PII redaction
+def test_pii_redaction():
+    document = "SSN: 123-45-6789, Email: test@example.com"
+
+    result = extract_entities(document, redact_pii=True)
+
+    # SSN should be redacted
+    assert 'XXX-XX-XXXX' in result['redacted_text']
+    assert '123-45-6789' not in result['redacted_text']
+```
+
+---
+
+## 7. Handling Interviewer Pushback
 
 | Interviewer Says | Your Response |
 |-----------------|---------------|
@@ -198,13 +264,13 @@ CREATE TABLE extracted_entities (
 
 ---
 
-## 7. Summary: Your Interview Narrative
+## 8. Summary: Your Interview Narrative
 
-> "I'd design a **multi-stage entity extraction pipeline**. Documents are uploaded and normalized into clean text with section detection. Entity extraction uses a tiered approach: regex for structured fields, a fine-tuned NER model for entities like skills and companies, and an LLM for complex unstructured text. Each extraction includes a confidence score. Low-confidence results are flagged for human review. The system scales horizontally with worker pools, uses caching to avoid re-processing duplicate documents, and maintains a feedback loop where human corrections improve model accuracy."
+> "I'd design a **multi-stage entity extraction pipeline**. Documents are uploaded and normalized into clean text with section detection. Entity extraction uses a tiered approach: regex for structured fields, a fine-tuned NER model for entities like skills and companies, and an LLM for complex unstructured text. Each extraction includes a confidence score. Low-confidence results are flagged for human review. The system scales horizontally with worker pools, uses caching to avoid re-processing duplicate documents, and maintains a feedback loop where human corrections improve model accuracy. Security includes encryption at rest, PII redaction, malware scanning, and prompt injection prevention for LLM calls."
 
 ---
 
-## 8. Key Terms to Drop Naturally
+## 9. Key Terms to Drop Naturally
 
 - **NER (Named Entity Recognition)**
 - **OCR** (for scanned documents)

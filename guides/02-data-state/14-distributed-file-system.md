@@ -230,7 +230,82 @@ Block rebalancing:
 
 ---
 
-## 9. Handling Interviewer Pushback
+## 9. Security Considerations
+
+```
+Access Control:
+  - Per-namespace isolation: tenant-A cannot access tenant-B files
+  - RBAC: owner, editor, viewer roles with different permissions
+  - Audit logging: who accessed which file, when, from which IP
+
+Data Protection:
+  - Encryption at rest: AES-256 for all blocks on chunk servers
+  - Encryption in transit: TLS for client↔chunk server communication
+  - Key management: KMS integration, per-tenant encryption keys
+  - Secure deletion: crypto-shred blocks by destroying encryption keys
+
+Integrity:
+  - Checksums: SHA-256 per block, verified on every read
+  - Bit-rot detection: periodic scrubbing reads all data, repairs from replicas
+  - Tamper evidence: WORM for compliance (append-only logs)
+```
+
+---
+
+## 9. Testing Distributed File System
+
+```python
+# Test: Write-read consistency
+def test_write_read():
+    client = DFSClient()
+    file_path = "/tenant-A/test/data.txt"
+
+    # Write file
+    client.write(file_path, b"Hello World", replication=3)
+
+    # Read from different client
+    client2 = DFSClient()
+    data = client2.read(file_path)
+
+    assert data == b"Hello World"
+
+# Test: Block replication on chunk server failure
+def test_replication():
+    # Write file with 3 replicas
+    client.write("/test/file.bin", b"x" * (64 * 1024 * 1024), replication=3)
+
+    # Get block locations
+    blocks = client.get_block_locations("/test/file.bin")
+    assert len(blocks[0].locations) == 3
+
+    # Kill one chunk server
+    blocks[0].locations[0].server.kill()
+
+    # Wait for re-replication
+    time.sleep(5)
+
+    # Should still have 3 replicas
+    blocks = client.get_block_locations("/test/file.bin")
+    assert len(blocks[0].locations) == 3
+
+# Test: Checksum verification
+def test_checksum_verification():
+    # Write file
+    client.write("/test/data.txt", b"important data")
+
+    # Corrupt one block
+    block_info = client.get_block_locations("/test/data.txt")[0]
+    chunk_server = block_info.locations[0].server
+    chunk_server.corrupt_block(block_info.block_id)
+
+    # Read should detect corruption and repair
+    data = client.read("/test/data.txt")
+    assert data == b"important data"  # Automatically repaired from other replicas
+```
+
+---
+
+## 10. Handling Interviewer Pushback
 
 | Interviewer Says | Your Response |
 |-----------------|---------------|

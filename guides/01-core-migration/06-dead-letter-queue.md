@@ -198,7 +198,66 @@ Instead of human review for every message:
 
 ---
 
-## 6. Handling Interviewer Pushback
+## 6. Security Considerations
+
+```
+Access Control:
+  - DLQ dashboard requires authentication + authorization
+  - Role-based permissions: operators can replay, engineers can diagnose
+  - Audit log for all DLQ actions (who replayed what, when)
+
+Data Privacy:
+  - PII in DLQ messages: redact or encrypt
+  - Sensitive payloads: mask before storing in DLQ
+  - Retention policies enforce automatic deletion after N days
+
+Message Integrity:
+  - Validate message structure before DLQ routing
+  - Detect tampering: hash of original payload stored in metadata
+  - Non-repudiation: who/what/when recorded for each DLQ entry
+```
+
+---
+
+## 6. Testing the DLQ System
+
+```python
+# Test: Message routes to DLQ after max retries
+def test_dlq_routing():
+    message = {"job_id": "test-123", "data": "malicious_sql"}
+    producer.send(topic="jobs", value=message)
+
+    # Simulate 5 failed attempts
+    for i in range(5):
+        consume_and_fail(message)
+
+    # Verify in DLQ
+    dlq_messages = consume_dlq()
+    assert len(dlq_messages) == 1
+    assert dlq_messages[0]['original_message']['job_id'] == "test-123"
+    assert dlq_messages[0]['failure_metadata']['attempt_count'] == 5
+
+# Test: Bulk replay functionality
+def test_bulk_replay():
+    # Send 10 messages to DLQ
+    for i in range(10):
+        send_to_dlq(failure_data[i])
+
+    # Fix consumer bug
+    deploy_consumer_fix()
+
+    # Bulk replay
+    replayed = replay_dlq_messages(filter="all")
+    assert replayed == 10
+
+    # Verify all processed successfully
+    for msg in replayed:
+        assert get_status(msg['job_id']) == "COMPLETED"
+```
+
+---
+
+## 7. Handling Interviewer Pushback
 
 | Interviewer Says | Your Response |
 |-----------------|---------------|
@@ -210,13 +269,13 @@ Instead of human review for every message:
 
 ---
 
-## 7. Summary: Your Interview Narrative
+## 8. Summary: Your Interview Narrative
 
-> "I'd design the DLQ as a **dedicated Kafka topic paired with a metadata store in Postgres**. When a consumer fails to process a message after N retries with exponential backoff, it publishes the original message plus failure metadata to the DLQ topic. A DLQ processor stores the enriched record in Postgres for dashboard queries. The dashboard groups failures by error type for efficient triage. Operators can bulk-replay, selectively replay, or discard messages. Alerts fire when DLQ depth or growth rate exceeds thresholds. Replay is rate-limited to avoid overwhelming the main pipeline."
+> "I'd design the DLQ as a **dedicated Kafka topic paired with a metadata store in Postgres**. When a consumer fails to process a message after N retries with exponential backoff, it publishes the original message plus failure metadata to the DLQ topic. A DLQ processor stores the enriched record in Postgres for dashboard queries. The dashboard groups failures by error type for efficient triage. Operators can bulk-replay, selectively replay, or discard messages. Alerts fire when DLQ depth or growth rate exceeds thresholds. Replay is rate-limited to avoid overwhelming the main pipeline. Security includes RBAC for dashboard access, audit logging of all actions, and PII redaction for sensitive payloads."
 
 ---
 
-## 8. Key Terms to Drop Naturally
+## 9. Key Terms to Drop Naturally
 
 - **Poison message**, **dead letter queue**
 - **Exponential backoff with jitter**

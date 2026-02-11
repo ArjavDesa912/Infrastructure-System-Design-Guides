@@ -118,6 +118,38 @@ Functions (Level 0)─┘                       │
 - Topologically sort to determine conversion order
 - Circular dependencies → flag for human review
 
+**Dependency Graph Implementation:**
+```python
+# Pseudo-code for dependency analysis
+def build_dependency_graph(sql_files):
+    graph = defaultdict(set)  # file -> dependents
+    in_degree = defaultdict(int)
+
+    for file in sql_files:
+        ast = parse_sql(file.content)
+        for ref in extract_references(ast):
+            graph[ref].add(file.name)
+            in_degree[file.name] += 1
+
+    return graph, in_degree
+
+def topological_sort(graph, in_degree):
+    queue = [node for node in graph if in_degree[node] == 0]
+    levels = []
+
+    while queue:
+        current_level = queue
+        queue = []
+        for node in current_level:
+            for dependent in graph[node]:
+                in_degree[dependent] -= 1
+                if in_degree[dependent] == 0:
+                    queue.append(dependent)
+        levels.append(current_level)
+
+    return levels  # Each level can be converted in parallel
+```
+
 ---
 
 ## 4. Bottlenecks & Solutions
@@ -174,16 +206,43 @@ CREATE TABLE migration_files (
 | "10GB is huge — how do you not run out of memory?" | "We never hold the full file in memory. Uploads stream directly to S3 via multipart. Extraction is streamed. Each worker only loads its assigned files (usually KB-MB each)." |
 | "What if the LLM produces incorrect SQL?" | "Every LLM output goes through a validation loop: (1) rule-based syntax check, (2) Snowflake parser check. If validation fails, we retry with the error message as context — up to N times. Persistent failures go to a human review queue." |
 | "How do you handle a migration that takes 6 hours?" | "Checkpointing. Every file conversion is independently tracked. If the process crashes at 99%, we resume from the last unconverted file — not from scratch. The user sees real-time progress via WebSocket." |
+| "What's the cost of running LLMs at scale?" | "We use a hybrid approach: 80% of files use fast, cheap rule-based conversion. Only the 20% with complex patterns go to LLM. We also cache LLM responses for similar code patterns to avoid redundant calls. Estimated cost: ~$0.50 per GB of SQL code." |
+| "How do you ensure semantic equivalence?" | "We don't guarantee semantic equivalence — that's undecidable in general. We provide a diff report showing what changed, and recommend running test suites against converted code. For critical migrations, we offer a side-by-side comparison mode where both source and target code execute on sample data." |
+| "What if the zip contains malicious code?" | "Sandbox isolation: each file converts in a container with no network access. We also scan for obvious patterns (DROP TABLE, dangerous system calls) and flag them. The converted code is never executed — only parsed and transformed." |
 
 ---
 
-## 7. Summary: Your Interview Narrative
+## 7. Cost & Performance Optimization
+
+```
+Cost Reduction Strategies:
+  1. Spot instances for conversion workers (70% savings)
+  2. Batch LLM API calls (process multiple files in one prompt)
+  3. Cache conversion results by hash (same SQL = same output)
+  4. Auto-suspend idle workers after 5 minutes of inactivity
+
+Performance Targets:
+  - Upload: 10GB in < 2 minutes (via multipart)
+  - Extraction: 50K files in < 5 minutes
+  - Conversion: 500 files/min with 100 workers
+  - End-to-end: 1 hour for 10GB zip with 50K files
+
+Optimization Techniques:
+  - Compress input ZIP before upload (client-side)
+  - Use Snowflake's parser API (not full DB connection)
+  - Pre-warm worker pool during upload stage
+  - Parallelize validation (10 validators read from queue)
+```
+
+---
+
+## 8. Summary: Your Interview Narrative
 
 > "I'd design a **staged pipeline architecture** for code migration. Large files are uploaded via resumable multipart upload to S3. An extraction worker unpacks the archive and catalogs all SQL files into a registry. A dependency analyzer builds a DAG and assigns conversion levels. The transpilation engine — a hybrid of rule-based transforms and LLM fallback — fans out across a worker pool, converting files in dependency order. Every output is validated against Snowflake's parser. Failed conversions retry with error context, and persistent failures go to a DLQ for human review. The whole process is checkpointed per-file, so crashes resume gracefully."
 
 ---
 
-## 8. Key Terms to Drop Naturally
+## 9. Key Terms to Drop Naturally
 
 - **Resumable upload**, **multipart upload** (tus protocol)
 - **DAG** (directed acyclic graph), **topological sort**

@@ -144,16 +144,36 @@ Kafka sizing:
   Retention: 24 hours
   Storage: 10K jobs/min × 1KB metadata × 1440 min = ~14GB/day
 
+  Partition count calculation:
+    Target throughput per partition: 50 MB/sec
+    Message size: 1 KB
+    Messages per partition per sec: 50,000
+    Required partitions for 10K jobs/min (167/sec): ceil(167/50,000) = 1
+    But for parallelism: 200 partitions allows 200 workers to read simultaneously
+
 Worker sizing:
   50K concurrent ÷ 5 min average = 10K completions/min
   Each worker handles 1 job at a time (CPU-bound)
   Need: ~50K workers at peak
   With Kubernetes HPA: scale 0 → 50K pods (warm pool of 5K)
 
+  Cost optimization:
+    Spot instances for worker pods (50-70% cost savings)
+    Preemption handling: workers gracefully shutdown on spot termination
+    Checkpoint job progress to resume on new worker
+
 Job Store (Postgres):
   10K inserts/min = 167/sec (well within Postgres capacity)
   Index on (status, priority) for scheduler queries
   Partition by created_at for archival
+
+  Connection pooling: PgBouncer with 100 connections per worker pod
+  Read replicas: Worker reads can hit read replicas to reduce primary load
+
+Network bandwidth:
+  50K jobs × 1MB payload = 50 GB data transfer
+  With internal VPC: 10 Gbps network = ~50 seconds for full transfer
+  S3 to worker streaming: 100 MB/sec per worker
 ```
 
 ---
@@ -206,16 +226,39 @@ CREATE INDEX idx_jobs_tenant ON jobs(tenant_id, status);
 | "What about observability?" | "Every state transition emits a structured event. We track queue depth, worker utilization, p50/p99 job latency, failure rates, and DLQ growth. Alerts fire on anomalies." |
 | "How do you handle a job that runs forever?" | "Each job has a max_duration timeout. Workers send heartbeats every 30 seconds. If no heartbeat for 2 minutes, the Health Monitor marks the job as TIMED_OUT and requeues it. After max_retries, it goes to DLQ." |
 | "What about multi-tenant fairness?" | "Per-tenant concurrency limits and fair-share scheduling. If Tenant A submits 10K jobs, they get at most their fair share of workers (e.g., 10K out of 50K). Other tenants aren't starved." |
+| "How do you handle worker crashes mid-job?" | "Workers catch SIGTERM and gracefully shutdown: (1) stop accepting new jobs, (2) mark current job as FAILED in Job Store, (3) job gets requeued after visibility timeout. For hard crashes (OOM, kernel panic), the Health Monitor detects missing heartbeats and reassigns the job." |
+| "What's the recovery time objective (RTO)?" | "For worker failures: < 1 minute (heartbeat timeout + requeue). For Job Store failures: < 5 minutes (Postgres streaming replication with failover). For Kafka failures: < 30 seconds (ISR replica promotion)." |
 
 ---
 
-## 7. Summary: Your Interview Narrative
+## 7. Security Considerations
+
+```
+Authentication & Authorization:
+  - Workers authenticate with Job API via mTLS certificates
+  - Role-based access control: workers can only update jobs assigned to them
+  - Job payloads encrypted at rest in S3 (SSE-KMS)
+
+Data Privacy:
+  - Tenant isolation: jobs filtered by tenant_id in all queries
+  - Audit logging: who submitted which job, when, and result
+  - PII in job payloads: encrypted before storage, decrypted only by workers
+
+Network Security:
+  - VPC endpoints for S3, Kafka (no internet gateway traversal)
+  - Network policies restrict worker-to-worker communication
+  - API Gateway rate limiting per tenant (see Rate Limiter guide)
+```
+
+---
+
+## 8. Summary: Your Interview Narrative
 
 > "I'd design a **pull-based distributed job scheduler** with Kafka as the backbone. Jobs are submitted via API, persisted to a Job Store, and enqueued to partitioned Kafka topics. A pool of stateless workers auto-scales based on queue depth, pulling and processing jobs independently. Failed jobs retry with exponential backoff before landing in a DLQ. For 50K concurrent jobs, I'd use 200+ Kafka partitions, Kubernetes HPA for worker scaling, and S3 for payload storage to keep the queue lightweight. Observability is built in from day one with structured event logging and metric dashboards."
 
 ---
 
-## 8. Key Terms to Drop Naturally
+## 9. Key Terms to Drop Naturally
 
 - **Consumer groups** (Kafka), **visibility timeout** (SQS)
 - **Idempotency**, **exactly-once semantics**

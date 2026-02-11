@@ -257,7 +257,79 @@ Cross-shard metrics:
 
 ---
 
-## 9. Handling Interviewer Pushback
+## 9. Security Considerations
+
+```
+Tenant Isolation:
+  - Database-level isolation: separate DBs per tenant for sensitive customers
+  - Row-level security: tenant_id filtering enforced at DB level
+  - Connection pooling: separate pools per tenant tier (free vs. enterprise)
+
+Data Protection:
+  - Encryption at rest: per-shard encryption keys
+  - Encryption in transit: TLS for all connections
+  - Backup encryption: encrypted backups with key rotation
+
+Access Control:
+  - Per-tenant roles: admin, editor, viewer
+  - Audit logging: track cross-tenant access attempts
+  - Network isolation: VPC per shard tier
+```
+
+---
+
+## 9. Testing Database Sharding
+
+```python
+# Test: Shard routing correctness
+def test_shard_routing():
+    # Shard by tenant_id % 4
+    num_shards = 4
+
+    for tenant_id in range(100):
+        expected_shard = tenant_id % num_shards
+        actual_shard = route_to_shard(tenant_id)
+        assert actual_shard == f"shard-{expected_shard}"
+
+# Test: Cross-shard query detection
+def test_cross_shard_detection():
+    # Single-shard query (should succeed)
+    result = execute_query(
+        "SELECT * FROM orders WHERE tenant_id = 42",
+        tenant_id=42
+    )
+    assert result.shard_count == 1
+
+    # Cross-shard query (should warn/fail)
+    with pytest.raises(CrossShardQueryError):
+        execute_query(
+            "SELECT * FROM orders WHERE amount > 1000",  # No tenant filter
+            tenant_id=42
+        )
+
+# Test: Rebalancing without downtime
+def test_rebalancing():
+    # Initial state: 2 shards
+    assert count_virtual_shards_on_physical("shard-0") == 128
+    assert count_virtual_shards_on_physical("shard-1") == 128
+
+    # Rebalance virtual shard 0-63 from shard-0 to shard-2
+    rebalance(virtual_range=(0, 63), from_shard="shard-0", to_shard="shard-2")
+
+    # Verify new distribution
+    assert count_virtual_shards_on_physical("shard-0") == 64
+    assert count_virtual_shards_on_physical("shard-1") == 128
+    assert count_virtual_shards_on_physical("shard-2") == 64
+
+    # Verify data integrity (reads still work)
+    for tenant_id in range(64):
+        data = read_from_shard(tenant_id=tenant_id)
+        assert data is not None
+```
+
+---
+
+## 10. Handling Interviewer Pushback
 
 | Interviewer Says | Your Response |
 |-----------------|---------------|

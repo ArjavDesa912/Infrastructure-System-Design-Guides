@@ -204,7 +204,76 @@ Trace analysis shows:
 
 ---
 
-## 7. Handling Interviewer Pushback
+## 7. Security Considerations
+
+```
+Access Control:
+  - Trace viewing restricted by tenant/service boundaries
+  - RBAC: operators see all, developers see their services
+  - Audit log for trace queries (who searched what)
+
+Data Privacy:
+  - PII in span tags: redact or hash sensitive values
+  - Request/response bodies: opt-in, truncated by default
+  - Trace IDs: random UUIDs, no embedded user info
+
+Tamper Resistance:
+  - Signed spans: HMAC prevents trace injection attacks
+  - Validate traceparent headers (W3C format)
+  - Rate limit trace ingestion to prevent abuse
+```
+
+---
+
+## 7. Testing Distributed Tracing
+
+```python
+# Test: Trace context propagation
+def test_trace_propagation():
+    # Service A initiates trace
+    trace_id = generate_trace_id()
+    span_a = create_span("service-a", "operation", trace_id=trace_id)
+
+    # Propagate to service B via HTTP
+    headers = propagate_context(span_a)
+    assert headers["traceparent"] == f"00-{trace_id}-{span_a.span_id}-01"
+
+    # Service B extracts context
+    span_b = extract_context(headers)
+    assert span_b.trace_id == trace_id
+    assert span_b.parent_id == span_a.span_id
+
+# Test: Adaptive sampling boosts on error
+def test_adaptive_sampling():
+    sampler = AdaptiveSampler(default_rate=0.1)
+
+    # Normal request
+    assert sampler.should_sample(span_attrs={"status": "200"}) == 0.1
+
+    # Error request - should boost to 100%
+    assert sampler.should_sample(span_attrs={"status": "500"}) == 1.0
+
+    # Slow request - should boost
+    assert sampler.should_sample(span_attrs={"duration_ms": 5000}) == 1.0
+
+# Test: Trace reconstruction
+def test_trace_reconstruction():
+    spans = [
+        {"trace_id": "abc", "span_id": "A", "parent_id": None, "service": "gateway", "duration": 100},
+        {"trace_id": "abc", "span_id": "B", "parent_id": "A", "service": "auth", "duration": 20},
+        {"trace_id": "abc", "span_id": "C", "parent_id": "A", "service": "job", "duration": 50},
+    ]
+
+    trace = reconstruct_trace(spans)
+
+    assert trace.duration == 100  # Root span
+    assert len(trace.children) == 2  # auth and job
+    assert trace.children[0].service == "auth"
+```
+
+---
+
+## 8. Handling Interviewer Pushback
 
 | Interviewer Says | Your Response |
 |-----------------|---------------|
@@ -216,13 +285,13 @@ Trace analysis shows:
 
 ---
 
-## 8. Summary: Your Interview Narrative
+## 9. Summary: Your Interview Narrative
 
-> "I'd design a **distributed tracing system** using the W3C Trace Context standard for propagation. Each service creates spans with trace_id, span_id, and parent_span_id, propagated via HTTP headers and message metadata. Spans are collected by local agents, batched, and sent to a central collector. I'd use **adaptive sampling** — 10% by default, 100% for errors and slow traces. Storage uses Elasticsearch or ClickHouse for indexed span queries. The UI shows trace waterfalls, service dependency maps, and latency breakdowns. Traces are correlated with logs (via trace_id) and metrics for full observability."
+> "I'd design a **distributed tracing system** using the W3C Trace Context standard for propagation. Each service creates spans with trace_id, span_id, and parent_span_id, propagated via HTTP headers and message metadata. Spans are collected by local agents, batched, and sent to a central collector. I'd use **adaptive sampling** — 10% by default, 100% for errors and slow traces. Storage uses Elasticsearch or ClickHouse for indexed span queries. The UI shows trace waterfalls, service dependency maps, and latency breakdowns. Traces are correlated with logs (via trace_id) and metrics for full observability. Security includes RBAC for trace access, PII redaction from span tags, HMAC signing to prevent trace injection, and rate limiting on trace ingestion."
 
 ---
 
-## 9. Key Terms to Drop Naturally
+## 10. Key Terms to Drop Naturally
 
 - **Trace**, **span**, **context propagation**
 - **W3C Trace Context**, **traceparent**

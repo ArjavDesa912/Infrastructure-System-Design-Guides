@@ -223,7 +223,84 @@ finally:
 
 ---
 
-## 7. Handling Interviewer Pushback
+## 7. Security Considerations
+
+```
+Access Control:
+  - Only authenticated workers can acquire locks
+  - Per-tenant lock namespaces (tenant-A:file-123 vs tenant-B:file-123)
+  - Audit logging: who acquired which lock, when, for how long
+
+Lock Exhaustion Attacks:
+  - Rate limit lock acquisition attempts per worker
+  - Max locks per worker (prevent one worker from hogging all locks)
+  - Auto-release locks held > max TTL (even with heartbeat)
+
+Data Privacy:
+  - Lock names may contain sensitive resource IDs
+  - Log lock operations without exposing payload
+  - Encrypt lock metadata at rest
+```
+
+---
+
+## 7. Testing Distributed Locks
+
+```python
+# Test: Mutual exclusion
+def test_mutual_exclusion():
+    lock = DistributedLock("file-123")
+    results = []
+
+    def worker(worker_id):
+        if lock.acquire(timeout=1):
+            results.append(f"{worker_id}-acquired")
+            time.sleep(0.5)
+            lock.release()
+            results.append(f"{worker_id}-released")
+
+    # Run 10 workers concurrently
+    threads = [Thread(target=worker, args=(i,)) for i in range(10)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    # Verify only one worker held lock at a time
+    acquired = [r for r in results if "acquired" in r]
+    assert len(acquired) > 0
+    # Check interleaving pattern: acquired, released, acquired, released...
+
+# Test: Fencing token monotonicity
+def test_fencing_tokens():
+    tokens = []
+    for i in range(5):
+        lock = acquire("resource")
+        tokens.append(lock.fencing_token)
+        lock.release()
+
+    # Verify tokens are monotonically increasing
+    assert tokens == sorted(tokens)
+
+# Test: Lock expiration on crash
+def test_lock_expiration():
+    lock = acquire("file-123", ttl=2)
+    assert lock.is_locked()
+
+    # Simulate crash (don't release)
+    del lock
+
+    # Wait for TTL expiration
+    time.sleep(3)
+
+    # Another worker should now acquire
+    lock2 = acquire("file-123", ttl=2)
+    assert lock2.is_locked()
+```
+
+---
+
+## 8. Handling Interviewer Pushback
 
 | Interviewer Says | Your Response |
 |-----------------|---------------|
@@ -235,13 +312,13 @@ finally:
 
 ---
 
-## 7. Summary: Your Interview Narrative
+## 9. Summary: Your Interview Narrative
 
-> "I'd design a **distributed lock manager using etcd (or ZooKeeper) for strong consistency cases and Redis for softer locking needs**. Each lock maps to a resource (e.g., a file being converted). Workers acquire locks with a lease/TTL and send heartbeats to extend it during long operations. If a worker crashes, the lease expires and the lock auto-releases. Critically, I'd implement **fencing tokens** — monotonically increasing tokens returned with each lock acquisition. The downstream storage system rejects writes from stale lock holders by comparing fencing tokens. This prevents the classic GC-pause problem where two workers think they hold the same lock."
+> "I'd design a **distributed lock manager using etcd (or ZooKeeper) for strong consistency cases and Redis for softer locking needs**. Each lock maps to a resource (e.g., a file being converted). Workers acquire locks with a lease/TTL and send heartbeats to extend it during long operations. If a worker crashes, the lease expires and the lock auto-releases. Critically, I'd implement **fencing tokens** — monotonically increasing tokens returned with each lock acquisition. The downstream storage system rejects writes from stale lock holders by comparing fencing tokens. This prevents the classic GC-pause problem where two workers think they hold the same lock. Security includes per-tenant lock namespaces, rate limiting to prevent lock exhaustion attacks, and audit logging of all lock operations."
 
 ---
 
-## 8. Key Terms to Drop Naturally
+## 10. Key Terms to Drop Naturally
 
 - **Fencing token** (most critical concept)
 - **Lease**, **TTL**, **heartbeat**

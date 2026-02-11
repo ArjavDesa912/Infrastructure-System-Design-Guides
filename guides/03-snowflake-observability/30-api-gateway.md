@@ -235,7 +235,82 @@ Recommended: K8s service discovery (if on Kubernetes)
 
 ---
 
-## 8. Bottlenecks & Solutions
+## 8. Security Considerations
+
+```
+Authentication & Authorization:
+  - JWT validation at gateway (verify signature, expiration)
+  - OAuth2 / OpenID Connect integration
+  - Rate limiting per API key + per IP
+  - RBAC: check permissions before routing
+
+Input Validation:
+  - WAF (Web Application Firewall) rules: SQL injection, XSS detection
+  - Request size limits: reject > 10MB payloads
+  - Schema validation for POST/PUT (JSON Schema)
+  - Path sanitization: prevent directory traversal attacks
+
+DDoS Protection:
+  - Per-IP request rate limiting
+  - Challenge responses (CAPTCHA) for suspicious traffic
+  - Blacklist/whitelist IP ranges
+  - Auto-scaling to absorb volumetric attacks
+```
+
+---
+
+## 8. Testing API Gateway
+
+```python
+# Test: Circuit breaker trips on failures
+def test_circuit_breaker():
+    # Backend is healthy
+    assert circuit_breaker.state == "CLOSED"
+
+    # Simulate 5 failures
+    for i in range(5):
+        circuit_breaker.record_failure()
+
+    # Should open
+    assert circuit_breaker.state == "OPEN"
+
+    # Next request should fail fast
+    with pytest.raises(CircuitBreakerOpenError):
+        gateway.route("backend-service", "/api/test")
+
+# Test: Rate limiting per tenant
+def test_rate_limiting():
+    set_rate_limit(tenant_id="tenant-a", limit=10)
+
+    for i in range(10):
+        response = gateway.request(tenant_id="tenant-a", path="/api/jobs")
+        assert response.status_code == 200
+
+    # 11th request should be rate limited
+    response = gateway.request(tenant_id="tenant-a", path="/api/jobs")
+    assert response.status_code == 429
+    assert "Retry-After" in response.headers
+
+# Test: JWT validation
+def test_jwt_validation():
+    # Valid token
+    valid_jwt = create_jwt(tenant_id="tenant-a")
+    response = gateway.request(
+        headers={"Authorization": f"Bearer {valid_jwt}"}
+    )
+    assert response.status_code == 200
+
+    # Expired token
+    expired_jwt = create_jwt(tenant_id="tenant-a", exp=-3600)
+    response = gateway.request(
+        headers={"Authorization": f"Bearer {expired_jwt}"}
+    )
+    assert response.status_code == 401
+```
+
+---
+
+## 9. Bottlenecks & Solutions
 
 | Bottleneck | Solution |
 |------------|----------|

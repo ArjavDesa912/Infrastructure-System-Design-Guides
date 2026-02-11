@@ -111,6 +111,32 @@ Request 3 with key "abc" arrives (another retry) →
   See status = COMPLETED → Return cached response
 ```
 
+**State Transition Logic:**
+```
+PROCESSING → COMPLETED: Successful execution, response cached
+PROCESSING → FAILED: Error thrown, error logged, key kept for debugging
+FAILED → PROCESSING: Retry allowed (client resends with same key)
+COMPLETED: Terminal state, returns cached response forever (until TTL)
+```
+
+**Handling Stale PROCESSING Keys (Code):**
+```python
+# Background job to cleanup stuck keys
+def cleanup_stale_keys():
+    now = time.time()
+    stale_keys = redis.zrangebyscore(
+        "idempotency:processing",
+        0,
+        now - MAX_PROCESSING_TIME  # e.g., 5 minutes
+    )
+    for key in stale_keys:
+        # Check if actually still processing (worker heartbeat)
+        if not redis.exists(f"worker:{key}:heartbeat"):
+            # Reset to allow retry
+            redis.hset(f"idempotency:{key}", "status", "FAILED")
+            redis.hset(f"idempotency:{key}", "error", "Timeout")
+```
+
 ### 3.4 Storage Schema
 
 ```sql
@@ -237,16 +263,48 @@ Cons:
 | "How long do you keep idempotency keys?" | "24-48 hours is typical. Long enough to cover network retries and human re-clicks, short enough to not accumulate forever. After expiry, the same key can be reused for a genuinely new request." |
 | "What about distributed systems where multiple servers handle the same key?" | "The idempotency store must be centralized (Redis or database), not in-memory on a single server. Using Redis SET NX (set-if-not-exists) gives atomic check-and-lock across all servers. For extra safety, we include a request_body_hash to detect key reuse with different payloads." |
 | "What if the server crashes between processing and storing the response?" | "The key is in PROCESSING state. On restart, the background cleaner detects stale PROCESSING keys (older than max processing time) and resets them to allow retry. The business logic must be crash-safe — use DB transactions so partial work is rolled back." |
+| "How do you handle PATCH requests which may or may not be idempotent?" | "We require idempotency keys for all non-idempotent operations. For PATCH, we analyze the operation: `replace field X with value Y` is idempotent (can retry safely), but `increment counter by 1` is not. The latter requires an idempotency key regardless." |
+| "What's the performance overhead?" | "Two Redis operations per request: one GET to check, one SET to store. At ~0.5ms each, total overhead is ~1ms. For ultra-low-latency paths, we can use a local LRU cache with a short TTL (5 seconds) to reduce Redis hits by 80%." |
 
 ---
 
-## 7. Summary: Your Interview Narrative
+## 7. Testing Idempotency
 
-> "I'd implement idempotency using a **client-generated UUID key passed in a request header**. On each request, the server checks an idempotency store (Redis with DB fallback). If the key exists and is COMPLETED, we return the cached response. If PROCESSING, we return 409 to prevent concurrent duplicates. If new, we atomically set status to PROCESSING, execute the business logic, then update to COMPLETED with the response. Keys expire after 24-48 hours. For operations with external side effects (payments, emails), we use the downstream service's own idempotency features or an outbox pattern for exactly-once delivery."
+```
+Test Cases:
+
+1. Basic Idempotency
+   POST /api/jobs with key "abc" → 201 {job_id: 1}
+   POST /api/jobs with key "abc" → 201 {job_id: 1} (same response)
+
+2. Concurrent Retries
+   Send 10 requests with key "xyz" simultaneously
+   Expected: 1 executes, 9 get 409 or wait, all eventually get same result
+
+3. Key Reuse After Expiry
+   POST with key "expired" → 201
+   Wait for TTL to expire
+   POST with key "expired" → 201 (new job created)
+
+4. Different Payload, Same Key
+   POST with key "abc" and body {"file": "A"} → 201
+   POST with key "abc" and body {"file": "B"} → 409 Conflict
+   (or 400 if request_body_hash mismatch detected)
+
+5. Stale PROCESSING Recovery
+   Set key to PROCESSING, wait > MAX_PROCESSING_TIME
+   POST with same key → Should allow retry after cleanup
+```
 
 ---
 
-## 8. Key Terms to Drop Naturally
+## 8. Summary: Your Interview Narrative
+
+> "I'd implement idempotency using a **client-generated UUID key passed in a request header**. On each request, the server checks an idempotency store (Redis with DB fallback). If the key exists and is COMPLETED, we return the cached response. If PROCESSING, we return 409 to prevent concurrent duplicates. If new, we atomically set status to PROCESSING, execute the business logic, then update to COMPLETED with the response. Keys expire after 24-48 hours. For operations with external side effects (payments, emails), we use the downstream service's own idempotency features or an outbox pattern for exactly-once delivery. A background cleaner handles stale PROCESSING keys from crashed workers."
+
+---
+
+## 9. Key Terms to Drop Naturally
 
 - **Idempotency key**, **UUID v4**
 - **At-least-once delivery** (why idempotency matters)

@@ -195,9 +195,98 @@ Write:
 | **Cold start** | Empty cache, all requests hit DB | Cache warming on deploy |
 | **Inconsistency** | DB updated but cache not invalidated | Change Data Capture (CDC) → invalidate cache |
 
+### Cache Stampede Solution (Code)
+```python
+import redis
+import time
+
+def get_with_lock(key):
+    # Try to get cached value
+    value = redis.get(key)
+    if value:
+        return value
+
+    # Use Redis distributed lock
+    lock_key = f"lock:{key}"
+    lock_acquired = redis.set(lock_key, "1", nx=True, ex=10)
+
+    if lock_acquired:
+        try:
+            # Double-check after acquiring lock
+            value = redis.get(key)
+            if value:
+                return value
+
+            # Fetch from DB
+            value = db.query(key)
+            redis.setex(key, 3600, value)
+            return value
+        finally:
+            redis.delete(lock_key)
+    else:
+        # Wait for the lock holder to populate cache
+        time.sleep(0.1)
+        return get_with_lock(key)  # Retry
+```
+
+### Cache Warming Strategy
+```python
+# Pre-load hot data on deployment
+HOT_KEYS = ["config:features", "user:admin", "pricing:plans"]
+
+def warm_cache():
+    for key in HOT_KEYS:
+        value = db.query(key)
+        redis.setex(key, 3600, value)
+
+# Call this during deployment, before routing traffic
+warm_cache()
+```
+
 ---
 
-## 6. Handling Interviewer Pushback
+## 6. Multi-Layer Caching Architecture
+
+```
+┌─────────────────────────────────────────────────────┐
+│              L1: Application Cache                   │
+│  (In-process: Caffeine, Guava, Node-LRU)            │
+│                                                      │
+│  - Fastest: nanoseconds                              │
+│  - Per-instance, not shared                          │
+│  - Small: 100-1000 entries                           │
+│  - TTL: 30-60 seconds                                │
+└──────────────────┬──────────────────────────────────┘
+                   │ (L1 miss)
+                   ▼
+┌─────────────────────────────────────────────────────┐
+│              L2: Distributed Cache                   │
+│  (Redis Cluster)                                     │
+│                                                      │
+│  - Fast: microseconds                                │
+│  - Shared across all instances                       │
+│  - Medium: 1M-100M entries                           │
+│  - TTL: 5-60 minutes                                 │
+└──────────────────┬──────────────────────────────────┘
+                   │ (L2 miss)
+                   ▼
+┌─────────────────────────────────────────────────────┐
+│              L3: Database / Origin                   │
+│  (PostgreSQL, Snowflake)                             │
+│                                                      │
+│  - Slow: milliseconds                                │
+│  - Persistent, single source of truth               │
+└─────────────────────────────────────────────────────┘
+```
+
+**Why multi-layer?**
+- L1 reduces 95% of Redis calls (faster + cheaper)
+- L2 provides consistency across instances
+- L3 is the fallback with full data
+
+---
+
+## 7. Handling Interviewer Pushback
 
 | Interviewer Says | Your Response |
 |-----------------|---------------|
@@ -206,16 +295,49 @@ Write:
 | "How do you handle cache consistency with the database?" | "For most use cases, cache-aside with TTLs provides good-enough consistency. For critical data, we use CDC (Change Data Capture) — the database emits change events, and a consumer invalidates the corresponding cache keys in near-real-time." |
 | "How do you handle a hot key?" | "Multi-layer defense: (1) local in-process cache (Guava/Caffeine) with short TTL on each application server, (2) replicate the hot key across multiple Redis instances, (3) shard the hot key into sub-keys (e.g., hot_key:1, hot_key:2) and aggregate at read time." |
 | "What happens during a Redis node failover?" | "The replica is promoted to master in ~15 seconds. During failover: writes to the failed master's slots are temporarily unavailable, but reads from other slots continue. Application retries with exponential backoff. After promotion, the cluster redirects commands to the new master via MOVED responses." |
+| "What's the cache hit ratio you target?" | "It depends on the workload, but generally 90-95% for read-heavy workloads. Below 80%, we investigate: are TTLs too short, is the working set too large, or is there cache churn? We track hit ratio per key prefix to identify problematic data patterns." |
+| "How do you monitor cache performance?" | "Four key metrics: (1) Hit ratio (target >90%), (2) Latency (p99 < 1ms), (3) Memory usage (alert at 80%), (4) Ops/sec (ensure no degradation). We use Redis INFO command + Grafana dashboards + alerts on anomalies." |
 
 ---
 
-## 7. Summary: Your Interview Narrative
+## 8. Cache Coherence Strategies
 
-> "I'd design an **in-memory cache using Redis's proven architecture**: a single-threaded event loop processing commands against in-memory data structures (hash tables, skip lists). The cluster shards data across nodes using 16,384 hash slots with consistent hashing. Each master has replicas for read scaling and failover. Persistence combines AOF (durable, every-second fsync) and RDB snapshots (fast recovery). For eviction, I'd use approximated LRU. The application uses cache-aside pattern — check cache first, fetch from DB on miss. To prevent cache stampede, I'd use distributed locks so only one thread populates a missing key."
+```
+Write Patterns:
+
+1. Write-Through (Strong Consistency)
+   Client → Cache → DB (synchronous)
+   Pros: Always consistent
+   Cons: Slow writes (2 round trips)
+
+2. Write-Behind (High Performance)
+   Client → Cache (ack) → DB (async)
+   Pros: Fast writes
+   Cons: Data loss if cache fails
+
+3. Write-Around (Cache-Avoiding)
+   Client → DB (cache miss on next read)
+   Pros: Avoid caching write-only data
+   Cons: Next read is slow
+
+4. Cache-Aside (Most Common)
+   Read: Check cache → miss → DB → cache
+   Write: Update DB → invalidate cache
+   Pros: Simple, flexible
+   Cons: Stale reads possible (until TTL)
+```
+
+**Recommendation:** Cache-Aside for 95% of use cases, Write-Through for critical financial data.
 
 ---
 
-## 8. Key Terms to Drop Naturally
+## 9. Summary: Your Interview Narrative
+
+> "I'd design an **in-memory cache using Redis's proven architecture**: a single-threaded event loop processing commands against in-memory data structures (hash tables, skip lists). The cluster shards data across nodes using 16,384 hash slots with consistent hashing. Each master has replicas for read scaling and failover. Persistence combines AOF (durable, every-second fsync) and RDB snapshots (fast recovery). For eviction, I'd use approximated LRU. The application uses cache-aside pattern — check cache first, fetch from DB on miss. To prevent cache stampede, I'd use distributed locks so only one thread populates a missing key. For hot keys, we use a multi-layer architecture with local L1 cache to reduce Redis load by 95%."
+
+---
+
+## 10. Key Terms to Drop Naturally
 
 - **Single-threaded event loop**, **I/O multiplexing** (epoll)
 - **Skip list**, **hash table**, **SDS**

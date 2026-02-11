@@ -1,0 +1,13 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(xargs:*)",
+      "Bash(for file in \"02-data-state/14-distributed-file-system.md\" \"03-snowflake-observability/29-change-data-capture.md\" \"03-snowflake-observability/26-multi-tenant-saas.md\")",
+      "Bash(do:*)",
+      "Bash(done:*)",
+      "Bash(for:*)"
+    ],
+    "deny": [],
+    "ask": []
+  }
+}

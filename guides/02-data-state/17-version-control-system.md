@@ -219,7 +219,90 @@ Operations:
 
 ---
 
-## 6. Handling Interviewer Pushback
+## 6. Security Considerations
+
+```
+Access Control:
+  - Per-repository permissions (read, write, admin)
+  - Branch protection rules: require PR reviews for main branch
+  - Signed commits: GPG signatures verify author identity
+  - Webhook secrets: validate push events from authorized sources
+
+Data Integrity:
+  - SHA-1 hashes detect tampering (any change = new hash)
+  - Immutable objects: once written, never modified
+  - Collision resistance: prevent malicious hash collisions
+  - Audit log: all commits, pushes, branch changes logged
+
+Confidentiality:
+  - Private repositories: access restricted to authorized users
+  - Sensitive data scanning: detect secrets, API keys before commit
+  - Encrypted transport: TLS for all operations
+  - Code search permissions: respect per-repo access control
+```
+
+---
+
+## 6. Testing the Version Control System
+
+```python
+# Test: Commit creates snapshot
+def test_commit_snapshot():
+    repo = create_repo()
+
+    # Create initial commit
+    commit1 = repo.commit(
+        message="Initial commit",
+        files={"README.md": "Hello World", "src/main.sql": "SELECT 1"}
+    )
+
+    # Verify tree structure
+    tree = repo.get_tree(commit1.tree_hash)
+    assert "README.md" in tree.entries
+    assert "src/main.sql" in tree.entries
+
+    # Create second commit modifying one file
+    commit2 = repo.commit(
+        parent=commit1,
+        message="Update README",
+        files={"README.md": "Updated"}  # src/main.sql unchanged
+    )
+
+    # Verify unchanged file shares blob
+    tree1 = repo.get_tree(commit1.tree_hash)
+    tree2 = repo.get_tree(commit2.tree_hash)
+    assert tree1.entries["src/main.sql"].hash == tree2.entries["src/main.sql"].hash
+
+# Test: Branch creation is lightweight
+def test_branch_creation():
+    repo = create_repo()
+    commit = repo.commit(message="Initial", files={"file.txt": "content"})
+
+    # Create 100 branches
+    for i in range(100):
+        repo.create_branch(f"branch-{i}", commit)
+
+    # Branches are just pointers, minimal storage
+    assert repo.storage_size < 1000  # Small overhead
+
+# Test: Three-way merge
+def test_three_way_merge():
+    repo = create_repo()
+    base = repo.commit(message="base", files={"file.txt": "line1\nline2\nline3"})
+
+    branch_a = repo.commit(parent=base, message="a", files={"file.txt": "line1\nline2a\nline3"})
+    branch_b = repo.commit(parent=base, message="b", files={"file.txt": "line1\nline2b\nline3"})
+
+    # Merge should detect conflict
+    result = repo.merge(branch_a, branch_b, base)
+    assert result.status == "CONFLICT"
+    assert "line2a" in result.content
+    assert "line2b" in result.content
+```
+
+---
+
+## 7. Handling Interviewer Pushback
 
 | Interviewer Says | Your Response |
 |-----------------|---------------|
@@ -231,13 +314,13 @@ Operations:
 
 ---
 
-## 7. Summary: Your Interview Narrative
+## 8. Summary: Your Interview Narrative
 
-> "I'd design a **content-addressable version control system** inspired by Git. Every file, directory, and commit is stored as an object identified by its SHA-1 hash. Blobs store file content, trees store directory listings pointing to blobs, and commits point to trees with metadata (author, message, parent). Branches are lightweight pointers to commits. Since objects are content-addressed, identical files are automatically deduplicated — only changed files create new blobs. Diffs are computed by comparing tree objects. Merging uses three-way merge with the common ancestor. Storage is further optimized with packfiles and delta compression."
+> "I'd design a **content-addressable version control system** inspired by Git. Every file, directory, and commit is stored as an object identified by its SHA-1 hash. Blobs store file content, trees store directory listings pointing to blobs, and commits point to trees with metadata (author, message, parent). Branches are lightweight pointers to commits. Since objects are content-addressed, identical files are automatically deduplicated — only changed files create new blobs. Diffs are computed by comparing tree objects. Merging uses three-way merge with the common ancestor. Storage is further optimized with packfiles and delta compression. Security includes per-repository access controls, signed commits for identity verification, secret scanning to prevent API key leaks, and audit logging of all operations."
 
 ---
 
-## 8. Key Terms to Drop Naturally
+## 9. Key Terms to Drop Naturally
 
 - **Content-addressable storage**, **SHA-1 hash**
 - **Blob**, **tree**, **commit** (Git object types)
